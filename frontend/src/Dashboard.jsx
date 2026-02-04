@@ -1,169 +1,175 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { useWindowSize } from './hooks/useWindowSize'
-
-// --- ХЕЛПЕР ДЛЯ ГЕНЕРАЦИИ SVG ПУТИ (теперь принимает динамические параметры) ---
-const generateSVGPath = (units, containerWidth, hOffset, vSpacing) => {
-  if (units.length < 2 || containerWidth <= 0) return "";
-  
-  const points = units.map((_, index) => {
-    const y = index * vSpacing + 56;
-    const isEven = index % 2 === 0;
-    const x = containerWidth / 2 + (isEven ? -hOffset : hOffset);
-    return { x, y };
-  });
-
-  let pathD = `M ${points[0].x} ${points[0].y}`;
-
-  for (let i = 0; i < points.length - 1; i++) {
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    pathD += ` C ${p1.x},${p1.y + vSpacing / 2} ${p2.x},${p2.y - vSpacing / 2} ${p2.x},${p2.y}`;
-  }
-  
-  return pathD;
-};
-
+import Sidebar from './Sidebar'
 
 function Dashboard({ theme, toggleTheme }) {
   const [units, setUnits] = useState([])
   const [completedUnits, setCompletedUnits] = useState([])
   const navigate = useNavigate()
 
-  // --- АДАПТИВНОСТЬ ---
-  const { width: windowWidth } = useWindowSize();
-  const layout = useMemo(() => {
-    const isMobile = windowWidth < 500;
-    // Ограничиваем ширину контейнера или используем ширину окна
-    const cWidth = Math.min(windowWidth, 448) - 32; // Вычитаем паддинги (p-4 -> 2rem)
-    const hOffset = isMobile ? cWidth / 3.5 : 120;
-    const vSpacing = isMobile ? 140 : 150;
-    return {
-        containerWidth: cWidth,
-        horizontalOffset: hOffset,
-        verticalSpacing: vSpacing
-    };
-  }, [windowWidth]);
-
-
-  // --- Логика для анимации рисования пути ---
-  const pathRef = useRef(null);
-  const [pathLength, setPathLength] = useState(0);
-
-  const pathD = useMemo(() => (
-      units.length > 0 && layout.containerWidth > 0 
-          ? generateSVGPath(units, layout.containerWidth, layout.horizontalOffset, layout.verticalSpacing) 
-          : ""
-  ), [units, layout]);
-
   useEffect(() => {
-    if (pathRef.current) {
-      setPathLength(pathRef.current.getTotalLength());
-    }
-  }, [pathD]);
-  
-  useEffect(() => {
+    // Не забудь вернуть свой IP, если тестируешь с телефона!
     fetch('http://127.0.0.1:8000/api/units')
       .then(res => res.json())
-      .then(data => Array.isArray(data) && setUnits(data))
-      .catch(error => console.error("Ошибка при получении данных:", error));
-      
+      .then(data => setUnits(data))
     const saved = JSON.parse(localStorage.getItem('rucode_progress') || '[]')
     setCompletedUnits(saved)
   }, [])
 
-  const isUnlocked = (unit, index) => {
-    if (index === 0) return true;
-    const previousUnit = units[index - 1];
-    return !!(previousUnit && completedUnits.includes(previousUnit.id));
+  const isUnlocked = (index) => index === 0 || completedUnits.includes(index) || completedUnits.includes(units[index-1]?.id)
+
+  // --- 🐍 НОВАЯ МАТЕМАТИКА ПУТИ ---
+  const getPosition = (index) => {
+    const startY = 80;        // Отступ сверху
+    const stepY = 140;        // Расстояние между кнопками по высоте
+    const amplitude = 20;     // Размах виляния (20% от ширины экрана)
+    
+    // Формула змейки: i * Pi / 2 обеспечивает шаг "Центр -> Право -> Центр -> Лево"
+    const x = 50 + Math.sin(index * Math.PI / 2) * amplitude; 
+    const y = startY + index * stepY;
+    
+    return { x, y };
+  }
+
+  const renderPath = () => {
+    if (units.length === 0) return null;
+    
+    let pathString = "";
+    
+    units.forEach((_, i) => {
+      const pos = getPosition(i);
+      
+      if (i === 0) {
+        pathString += `M ${pos.x} ${pos.y}`; // Начальная точка
+      } else {
+        const prevPos = getPosition(i - 1);
+        
+        // Контрольные точки для плавной кривой Безье
+        const cp1x = prevPos.x;
+        const cp1y = prevPos.y + 70; // Тянем вниз от предыдущей
+        
+        const cp2x = pos.x;
+        const cp2y = pos.y - 70;     // Тянем вверх от текущей
+        
+        pathString += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${pos.x} ${pos.y}`;
+      }
+    });
+
+    // Высота SVG контейнера
+    const totalHeight = units.length * 140 + 200;
+
+    return (
+      <svg 
+        className="absolute top-0 left-0 w-full h-full z-0 pointer-events-none overflow-visible" 
+        style={{ height: totalHeight }}
+        viewBox={`0 0 100 ${totalHeight}`}
+        preserveAspectRatio="none"
+      >
+        {/* Слой 1: Граница дороги (Темная) */}
+        <path 
+            d={pathString} 
+            stroke={theme === 'dark' ? '#1f2937' : '#d1d5db'} // gray-800 / gray-300
+            strokeWidth="4" 
+            fill="none" 
+            strokeLinecap="round"
+        />
+        
+        {/* Слой 2: Асфальт (Светлая серединка) */}
+        <path 
+            d={pathString} 
+            stroke={theme === 'dark' ? '#374151' : '#f3f4f6'} // gray-700 / gray-100
+            strokeWidth="3" 
+            fill="none" 
+            strokeLinecap="round"
+            strokeDasharray="6 6" // Пунктир
+        />
+      </svg>
+    )
+  }
+  // --------------------------------
+
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    show: { opacity: 1, transition: { staggerChildren: 0.1 } }
+  }
+
+  const itemVariants = {
+    hidden: { opacity: 0, scale: 0 },
+    show: { opacity: 1, scale: 1, transition: { type: "spring", bounce: 0.4 } }
   }
 
   return (
-    <div className="min-h-screen font-sans flex flex-col items-center bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
+    <div className="min-h-screen font-sans flex bg-gray-50 dark:bg-gray-900 transition-colors duration-300 overflow-x-hidden">
       
-      <div className="w-full max-w-md p-4 flex justify-between items-center border-b dark:border-gray-800 bg-white dark:bg-gray-900 sticky top-0 z-20 shadow-sm">
-        <div className="font-black text-xl tracking-wider text-green-600 dark:text-green-400">RUCODE 🐍</div>
-        <div className="flex gap-4 items-center">
-            <button onClick={toggleTheme} className="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xl hover:scale-110 transition-transform">
-                {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
-            <div className="flex items-center gap-1 font-bold text-orange-500"><span>🔥</span> <span>0</span></div>
+      <Sidebar theme={theme} toggleTheme={toggleTheme} />
+
+      <div className="flex-1 flex flex-col items-center w-full md:pl-64 relative">
+        
+        {/* Моб. шапка */}
+        <div className="md:hidden w-full p-4 flex justify-between items-center border-b dark:border-gray-800 bg-white dark:bg-gray-900 sticky top-0 z-30">
+            <span className="font-black text-green-600 text-xl tracking-wider">RUCODE</span>
+            <button onClick={toggleTheme} className="text-2xl">{theme === 'dark' ? '☀️' : '🌙'}</button>
+        </div>
+
+        {/* КАРТА */}
+        <div className="w-full max-w-md relative py-10 flex flex-col items-center">
+            
+            {/* РИСУЕМ ДОРОГУ */}
+            {renderPath()}
+
+            <motion.div variants={containerVariants} initial="hidden" animate="show" className="w-full h-full z-10">
+                {units.map((unit, index) => {
+                    const unlocked = isUnlocked(index)
+                    const completed = completedUnits.includes(unit.id)
+                    const pos = getPosition(index); // Получаем координаты для кнопки
+
+                    // Сдвиг кнопки относительно центра (pos.x в процентах, переводим в стиль)
+                    const leftPosition = `${pos.x}%`; 
+
+                    return (
+                        <motion.div 
+                            key={unit.id} 
+                            variants={itemVariants} 
+                            className="absolute w-24 -ml-12" // -ml-12 чтобы центрировать элемент шириной w-24 (96px)
+                            style={{ left: leftPosition, top: pos.y }}
+                        >
+                            <motion.button 
+                                whileHover={{ scale: 1.1 }}
+                                whileTap={{ scale: 0.9 }}
+                                onClick={() => unlocked ? navigate(`/lesson/${unit.id}`) : null}
+                                disabled={!unlocked}
+                                className={`
+                                    w-24 h-24 rounded-full border-b-8 flex items-center justify-center text-4xl shadow-xl transition-all relative
+                                    ${completed 
+                                        ? 'bg-yellow-400 border-yellow-600' 
+                                        : unlocked 
+                                            ? (index === 0 ? 'bg-green-500 border-green-700' : 'bg-green-500 border-green-700') 
+                                            : 'bg-gray-200 dark:bg-gray-700 border-gray-300 dark:border-gray-600 grayscale opacity-80'
+                                    }
+                                `}
+                            >
+                                <span className="filter drop-shadow-md z-20">
+                                    {completed ? '👑' : (unlocked ? '⭐' : '🔒')}
+                                </span>
+
+                                {/* Имитация 3D блика на кнопке */}
+                                <div className="absolute top-2 right-4 w-4 h-4 bg-white opacity-20 rounded-full"></div>
+                                
+                                {/* Тултип снизу */}
+                                <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-white dark:bg-gray-800 px-3 py-1 rounded-lg shadow-md border dark:border-gray-700 text-xs font-bold text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                                    {unit.title}
+                                </div>
+                            </motion.button>
+                        </motion.div>
+                )})}
+                {/* Пустой блок внизу, чтобы контент не обрезался */}
+                <div style={{ height: units.length * 140 + 200 }}></div>
+            </motion.div>
         </div>
       </div>
-
-      <div className="w-full max-w-md mx-auto p-4">
-        {units.length > 0 ? (
-          <div 
-            className="relative" 
-            style={{ height: `${units.length * layout.verticalSpacing}px` }}
-          >
-            <svg className="absolute top-0 left-0 w-full h-full z-0" viewBox={`0 0 ${layout.containerWidth} ${units.length * layout.verticalSpacing}`}>
-              <motion.path
-                ref={pathRef}
-                d={pathD}
-                fill="none"
-                stroke={theme === 'dark' ? '#4A5568' : '#E2E8F0'}
-                strokeWidth="5"
-                strokeLinecap="round"
-                strokeDasharray={pathLength}
-                initial={{ strokeDashoffset: pathLength }}
-                animate={{ strokeDashoffset: 0 }}
-                transition={{ duration: 2, ease: "easeInOut", delay: 0.2 }}
-              />
-            </svg>
-            
-            {units.map((unit, index) => {
-              const unlocked = isUnlocked(unit, index);
-              const completed = completedUnits.includes(unit.id);
-              const isEven = index % 2 === 0;
-
-              const positionStyle = {
-                top: `${index * layout.verticalSpacing}px`,
-                left: `calc(50% + ${isEven ? -layout.horizontalOffset : layout.horizontalOffset}px)`,
-                transform: 'translateX(-50%)'
-              };
-
-              return (
-                <motion.div
-                  key={unit.id}
-                  className="absolute z-10 flex flex-col items-center"
-                  style={positionStyle}
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.5, delay: index * 0.2 }}
-                >
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => unlocked ? navigate(`/lesson/${unit.id}`) : null}
-                    disabled={!unlocked}
-                    className={`w-28 h-28 rounded-full border-b-8 flex items-center justify-center group shadow-xl transition-all
-                      ${completed ? 'bg-green-500 border-green-700' : unlocked ? 'bg-blue-500 border-blue-700' : 'bg-gray-300 dark:bg-gray-700 border-gray-400 dark:border-gray-600'}`}
-                  >
-                    <span className="text-5xl filter drop-shadow-md">
-                      {completed ? '✅' : (unlocked ? (index === 0 ? '⭐' : '🚀') : '🔒')}
-                    </span>
-                    {unlocked && (
-                      <div className="absolute -bottom-12 bg-white dark:bg-gray-700 text-gray-800 dark:text-white px-3 py-1 rounded-lg font-bold shadow-xl opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 border dark:border-gray-600">
-                        {unit.title}
-                        <div className="absolute top-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-700 rotate-45"></div>
-                      </div>
-                    )}
-                  </motion.button>
-                  <h3 className={`mt-3 font-bold uppercase text-sm tracking-widest ${unlocked ? 'text-gray-600 dark:text-gray-400' : 'text-gray-400 dark:text-gray-600'}`}>
-                    {unit.title}
-                  </h3>
-                </motion.div>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-center text-gray-500 dark:text-gray-400 mt-10">Загрузка карты...</p>
-        )}
-      </div>
     </div>
-  );
+  )
 }
 
-export default Dashboard;
+export default Dashboard
